@@ -1,0 +1,35 @@
+# CloudFormation Stack Parameters for nf-core VS Code Server
+# Edit these values before deploying the stack
+
+# Stack Configuration
+StackName: nf-core-vscode-server
+Region: us-east-1
+
+# User Configuration
+Parameters:
+  VSCodeUser: ec2-user
+  GitUserName: "Your Name"
+  GitUserEmail: your.email@example.com
+  
+  # Optional: Leave empty if not using
+  TowerAccessToken: ""
+  GithubAccessToken: ""
+  
+  # Git Repository to clone on startup (leave empty to skip)
+  RepoUrl: "https://github.com/nf-core/rnaseq.git"
+  
+  # Instance Configuration
+  InstanceName: VSCodeServer
+  InstanceVolumeSize: 100
+  InstanceType: m7g.2xlarge
+  InstanceOperatingSystem: AmazonLinux-2023
+  
+  # VS Code Server Configuration
+  HomeFolder: /workdir
+  DevServerBasePath: app
+  DevServerPort: 8081
+  
+  # Network Security
+  # IMPORTANT: Restrict this to your IP for production use
+  # Example: 203.0.113.0/24 or use 0.0.0.0/0 for any IP
+  MyIPCidrRange: 0.0.0.0/0
