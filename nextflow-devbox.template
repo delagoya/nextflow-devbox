@@ -1,4 +1,4 @@
-Description: Create a VS code-server instance with an Amazon CloudFront distribution for development of Nextflow pipelines. Version 4.0.0
+Description: "Create a VS code-server instance with an Amazon CloudFront distribution for development of Nextflow pipelines. Version 4.0.0"
 
 Parameters:
   VSCodeUser:
@@ -41,8 +41,8 @@ Parameters:
     AllowedValues: ['AmazonLinux-2023']
   HomeFolder:
     Type: String
-    Description: Folder to open in VS Code server
-    Default: /workdir
+    Description: Folder name to use as a working directory
+    Default: workdir
   DevServerBasePath:
     Type: String
     Description: Base path for the application to be added to Nginx sites-available list
@@ -377,7 +377,8 @@ Resources:
                 - !Sub echo 'export AWS_REGION=${AWS::Region}' >> /home/${VSCodeUser}/.bashrc
                 - !Sub echo 'export AWS_ACCOUNTID=${AWS::AccountId}' >> /home/${VSCodeUser}/.bashrc
                 - !Sub echo 'export NEXT_TELEMETRY_DISABLED=1' >> /home/${VSCodeUser}/.bashrc
-                - !Sub echo "export PS1='\[\033[01;32m\]\u:\[\033[01;34m\]\w\[\033[00m\]\$ '" >> /home/${VSCodeUser}/.bashrc
+                - !Sub |
+                  echo "export PS1='\[\033[01;32m\]\u:\[\033[01;34m\]\w\[\033[00m\]\$ '" >> /home/${VSCodeUser}/.bashrc
                 - !Sub chown -R ${VSCodeUser}:${VSCodeUser} /home/${VSCodeUser}
           - name: InstallAWSCLI
             action: aws:runShellScript
@@ -464,21 +465,45 @@ Resources:
                 - rm -rf /tmp/miniconda
                 - echo "Miniconda installed. Checking configuration"
                 - !Sub sudo -Hiu ${VSCodeUser} /home/${VSCodeUser}/.miniconda/bin/conda --version
-          - name: InstallNfCoreTools
+          - name: InstallJava
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 300            
+              runCommand:
+                - '#!/bin/bash'
+                - dnf install -y java-21-amazon-corretto
+                - echo "Java installed. Checking configuration"
+                - java -version
+          - name: InstallNextflow
             action: aws:runShellScript
             inputs:
               timeoutSeconds: 300            
               runCommand:
                 - '#!/bin/bash'
                 - !Sub |
-                  sudo -Hiu ${VSCodeUser} /bin/bash << END
-                  # source /home/${VSCodeUser}/.bashrc
+                  sudo -Hiu ${VSCodeUser} /bin/bash << 'END'
+                  cd /home/${VSCodeUser}/.local/bin
+                  curl -fsSL https://get.nextflow.io | bash
+                  chmod +x nextflow
+                  END
+                - !Sub chown -R ${VSCodeUser}:${VSCodeUser} /home/${VSCodeUser}
+                - echo "Nextflow installed. Checking configuration"
+                - !Sub sudo -Hiu ${VSCodeUser} /home/${VSCodeUser}/.local/bin/nextflow -version
+          - name: ConfigureCondaChannels
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 300            
+              runCommand:
+                - '#!/bin/bash'
+                - !Sub |
+                  sudo -Hiu ${VSCodeUser} /bin/bash << 'END'
                   /home/${VSCodeUser}/.miniconda/bin/conda config --add channels bioconda
                   /home/${VSCodeUser}/.miniconda/bin/conda config --add channels conda-forge
                   /home/${VSCodeUser}/.miniconda/bin/conda config --set channel_priority strict
-                  /home/${VSCodeUser}/.miniconda/bin/conda install -y "openjdk>=21" 
-                  /home/${VSCodeUser}/.miniconda/bin/conda install -y nextflow nf-core
+                  /home/${VSCodeUser}/.miniconda/bin/conda install -y -n base conda-libmamba-solver
+                  /home/${VSCodeUser}/.miniconda/bin/conda config --set solver libmamba
                   END
+                - echo "Conda channels configured for bioconda and conda-forge"
           - name: SetTowerAccessToken
             action: aws:runShellScript
             inputs:
@@ -512,12 +537,12 @@ Resources:
                   then
                     echo "No Repo"
                   else
-                    mkdir -p ${HomeFolder} && chown -R ${VSCodeUser}:${VSCodeUser} ${HomeFolder}
-                    cd ${HomeFolder}
+                    mkdir -p /home/${VSCodeUser}/${HomeFolder} && chown -R ${VSCodeUser}:${VSCodeUser} /home/${VSCodeUser}/${HomeFolder}
+                    cd /home/${VSCodeUser}/${HomeFolder}
                     RepoUrlRegion=$(echo "${RepoUrl}" | sed "s/{.Region}/${AWS::Region}/g")
                     sudo -u ${VSCodeUser} git clone $RepoUrlRegion
                     echo "Repo $(RepoUrlRegion) cloned. Checking configuration"
-                    ls -la ${HomeFolder}
+                    ls -la /home/${VSCodeUser}/${HomeFolder}
                   fi
           - name: ConfigureCodeServer
             action: aws:runShellScript
@@ -560,7 +585,7 @@ Resources:
                   EOF
                 - !Sub mkdir -p /home/${VSCodeUser}/.local/share/code-server/User/
                 - !Sub touch /home/${VSCodeUser}/.hushlogin
-                - !Sub mkdir -p ${HomeFolder} && chown -R ${VSCodeUser}:${VSCodeUser} ${HomeFolder}
+                - !Sub mkdir -p /home/${VSCodeUser}/${HomeFolder} && chown -R ${VSCodeUser}:${VSCodeUser} /home/${VSCodeUser}/${HomeFolder}
                 - !Sub |
                   tee /home/${VSCodeUser}/.local/share/code-server/User/settings.json <<EOF
                   {
@@ -796,7 +821,7 @@ Resources:
           #cloud-config
           hostname: ${InstanceName}
           runcmd:
-            - mkdir -p ${HomeFolder} && chown -R ${VSCodeUser}:${VSCodeUser} ${HomeFolder}
+            - mkdir -p /home/${VSCodeUser}/${HomeFolder} && chown -R ${VSCodeUser}:${VSCodeUser} /home/${VSCodeUser}/${HomeFolder}
       #SSH Key Pair 
       Tags:
       - Key: Name
@@ -893,13 +918,11 @@ Resources:
           FromPort: 80
           ToPort: 80
           SourcePrefixListId: !FindInMap [AWSRegionsPrefixListID, !Ref 'AWS::Region', PrefixList]
-        - Description: Allow SSH from any my IP
+        - Description: Allow SSH from my IP
           IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          # CidrIp: !Ref MyIPCIDRRange
-          # TODO: Remove the following line when workshop is over
-          CidrIp: 0.0.0.0/0
+          CidrIp: !Ref MyIPCidrRange
 
   VSCodeHealthCheckLambdaRole:
     Type: AWS::IAM::Role
@@ -1192,7 +1215,7 @@ Resources:
 Outputs:
   URL:
     Description: VSCode-Server URL
-    Value: !Sub https://${CloudFrontDistribution.DomainName}/?folder=${HomeFolder}
+    Value: !Sub https://${CloudFrontDistribution.DomainName}/?folder=/home/${VSCodeUser}/${HomeFolder}
   Password:
     Description: VSCode-Server Password
     Value: !GetAtt SecretPlaintext.password
@@ -1206,4 +1229,16 @@ Outputs:
     - KeyPairId: !GetAtt VSCodeEc2SSHKeyPair.KeyPairId
   SSHConnentCommand: 
     Value: !Sub 
-    - ssh -i ~/.ssh/${VSCodeEc2SSHKeyPair}.pem ec2-user@${VSCodeInstance.PublicDnsName}
+    - ssh -i ~/.ssh/${VSCodeEc2SSHKeyPair}.pem ec2-user@${PublicDnsName}
+    - PublicDnsName: !GetAtt VSCodeInstance.PublicDnsName
+  SSHConfig:
+    Description: SSH configuration block to append to ~/.ssh/config
+    Value: !Sub
+    - |
+      Host ${InstanceName}
+          HostName ${PublicDnsName}
+          User ${VSCodeUser}
+          IdentityFile ~/.ssh/${VSCodeEc2SSHKeyPair}.pem
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+    - PublicDnsName: !GetAtt VSCodeInstance.PublicDnsName

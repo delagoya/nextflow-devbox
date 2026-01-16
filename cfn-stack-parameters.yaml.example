@@ -2,7 +2,7 @@
 # Edit these values before deploying the stack
 
 # Stack Configuration
-StackName: nf-core-vscode-server
+StackName: nf-core-vscode-arm64
 Region: us-east-1
 
 # User Configuration

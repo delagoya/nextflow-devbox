@@ -9,8 +9,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration
-PARAMS_FILE="cfn-stack-parameters.yaml"
+# Default configuration
+DEFAULT_PARAMS_FILE="cfn-stack-parameters.yaml"
 TEMPLATE_FILE="nf-core-vscode-server-ssh.yaml"
 
 # Function to print colored messages
@@ -29,6 +29,41 @@ print_warning() {
 print_error() {
     echo -e "${RED}✗${NC} $1"
 }
+
+# Parse command line arguments
+PARAMS_FILE="$DEFAULT_PARAMS_FILE"
+
+show_usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  -p, --param-file FILE    CloudFormation parameters file (default: cfn-stack-parameters.yaml)"
+    echo "  -h, --help              Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0                                    # Use default parameters file"
+    echo "  $0 -p dev-params.yaml                # Use custom parameters file"
+    echo "  $0 --param-file prod-params.yaml     # Use custom parameters file (long form)"
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -p|--param-file)
+            PARAMS_FILE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
 
 # Function to check if required files exist
 check_files() {
@@ -94,9 +129,50 @@ read_parameters() {
     print_success "Region: $REGION"
 }
 
+# Function to get current public IP
+get_current_ip() {
+    print_info "Getting current public IP address..."
+    
+    # Try multiple services in case one is down
+    CURRENT_IP=""
+    
+    # Try AWS checkip service first
+    CURRENT_IP=$(curl -s --connect-timeout 5 checkip.amazonaws.com 2>/dev/null | tr -d '\n')
+    
+    if [ -z "$CURRENT_IP" ]; then
+        # Fallback to other services
+        CURRENT_IP=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null | tr -d '\n')
+    fi
+    
+    if [ -z "$CURRENT_IP" ]; then
+        CURRENT_IP=$(curl -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null | tr -d '\n')
+    fi
+    
+    # Validate IP format (basic check)
+    if [[ $CURRENT_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        # Add /32 for single IP CIDR
+        CURRENT_IP_CIDR="${CURRENT_IP}/32"
+        print_success "Current IP: $CURRENT_IP"
+        print_success "CIDR Range: $CURRENT_IP_CIDR"
+    else
+        print_error "Failed to get valid IP address from external services"
+        print_warning "Using 0.0.0.0/0 (open to all IPs) - NOT RECOMMENDED for production"
+        CURRENT_IP_CIDR="0.0.0.0/0"
+    fi
+}
+
 # Function to build CloudFormation parameters
 build_cfn_parameters() {
     print_info "Building CloudFormation parameters..."
+    
+    # Get current IP automatically
+    get_current_ip
+    
+    # Show user what IP will be used for security
+    echo ""
+    print_info "Security Configuration:"
+    echo "  SSH access will be restricted to: $CURRENT_IP_CIDR"
+    echo ""
     
     CFN_PARAMS=""
     
@@ -114,9 +190,11 @@ build_cfn_parameters() {
     [ -n "$CFN_Parameters_DevServerBasePath" ] && CFN_PARAMS+="ParameterKey=DevServerBasePath,ParameterValue=\"$CFN_Parameters_DevServerBasePath\" "
     [ -n "$CFN_Parameters_DevServerPort" ] && CFN_PARAMS+="ParameterKey=DevServerPort,ParameterValue=\"$CFN_Parameters_DevServerPort\" "
     [ -n "$CFN_Parameters_RepoUrl" ] && CFN_PARAMS+="ParameterKey=RepoUrl,ParameterValue=\"$CFN_Parameters_RepoUrl\" "
-    [ -n "$CFN_Parameters_MyIPCidrRange" ] && CFN_PARAMS+="ParameterKey=MyIPCidrRange,ParameterValue=\"$CFN_Parameters_MyIPCidrRange\" "
+    # Use automatically detected IP instead of YAML parameter
+    CFN_PARAMS+="ParameterKey=MyIPCidrRange,ParameterValue=\"$CURRENT_IP_CIDR\" "
     
     print_success "Parameters built successfully"
+    # echo $CFN_PARAMS
 }
 
 # Function to check if stack exists
@@ -142,19 +220,59 @@ deploy_stack() {
     
     print_info "Deploying CloudFormation stack..."
     
-    # Deploy the stack
-    aws cloudformation $OPERATION \
-        --stack-name "$STACK_NAME" \
-        --template-body "file://$TEMPLATE_FILE" \
-        --parameters $CFN_PARAMS \
-        --capabilities CAPABILITY_IAM \
-        --region "$REGION" \
-        &>/dev/null
+    # Check template size
+    template_size=$(wc -c < "$TEMPLATE_FILE")
     
-    if [ $? -eq 0 ]; then
+    if [ $template_size -gt 51200 ]; then
+        print_warning "Template size ($template_size bytes) exceeds CloudFormation limit (51200 bytes)"
+        print_info "Uploading template to S3..."
+        
+        # Get AWS Account ID
+        AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        
+        # Create S3 bucket for templates if it doesn't exist
+        S3_BUCKET="cfn-templates-${AWS_ACCOUNT_ID}-${REGION}"
+        
+        # Try to create bucket (will fail silently if exists)
+        if ! aws s3 ls "s3://${S3_BUCKET}" --region "$REGION" > /dev/null 2>&1; then
+            aws s3 mb "s3://${S3_BUCKET}" --region "$REGION" > /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                print_success "Created S3 bucket: ${S3_BUCKET}"
+            fi
+        fi
+        
+        # Upload template with public read access
+        S3_KEY="nf-core-vscode-server/$(date +%Y%m%d-%H%M%S)-${TEMPLATE_FILE}"
+        aws s3 cp "$TEMPLATE_FILE" "s3://${S3_BUCKET}/${S3_KEY}" \
+            --region "$REGION" \
+            > /dev/null 2>&1
+        
+        if [ $? -eq 0 ]; then
+            print_success "Template uploaded to S3"
+            TEMPLATE_PARAM="--template-url https://s3.${REGION}.amazonaws.com/${S3_BUCKET}/${S3_KEY}"
+        else
+            print_error "Failed to upload template to S3"
+            exit 1
+        fi
+    else
+        TEMPLATE_PARAM="--template-body file://$TEMPLATE_FILE"
+    fi
+    
+    # Deploy the stack
+    output=$(aws cloudformation $OPERATION \
+        --stack-name "$STACK_NAME" \
+        $TEMPLATE_PARAM \
+        --parameters $CFN_PARAMS \
+        --capabilities "CAPABILITY_IAM" \
+        --region "$REGION" 2>&1)
+    
+    exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
         print_success "Stack $ACTION initiated successfully"
     else
         print_error "Failed to $ACTION stack"
+        echo "$output"
         exit 1
     fi
 }
@@ -167,6 +285,7 @@ monitor_stack() {
     local last_event_time=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
     local stack_status=""
     local final_status=""
+    local last_status=""
     
     while true; do
         # Get current stack status
@@ -175,7 +294,7 @@ monitor_stack() {
             --region "$REGION" \
             --query 'Stacks[0].StackStatus' \
             --output text 2>/dev/null)
-        
+
         # Get recent events
         events=$(aws cloudformation describe-stack-events \
             --stack-name "$STACK_NAME" \
@@ -220,8 +339,7 @@ monitor_stack() {
                 exit 1
                 ;;
         esac
-        
-        sleep 5
+        sleep 10
     done
     
     echo ""
@@ -283,6 +401,9 @@ main() {
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}        nf-core VS Code Server - CloudFormation Deployment         ${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    print_info "Using parameters file: $PARAMS_FILE"
     echo ""
     
     # Check prerequisites

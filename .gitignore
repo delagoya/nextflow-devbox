@@ -1,1 +1,5 @@
 cfn-stack-parameters.yaml
+deployment.log 
+stack-outputs.txt 
+*.yaml
+!nextflow-devbox-template.yaml

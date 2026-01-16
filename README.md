@@ -41,6 +41,21 @@ nano cfn-stack-parameters.yaml
 - `RepoUrl`: Git repository to clone on startup
 - `MyIPCidrRange`: IP range for SSH access (default: 0.0.0.0/0)
 
+**Multiple Environment Support:**
+
+You can create different parameter files for different environments:
+
+```bash
+# Create environment-specific parameter files
+cp cfn-stack-parameters.yaml dev-params.yaml
+cp cfn-stack-parameters.yaml prod-params.yaml
+
+# Edit each file with environment-specific values
+# Then deploy using the appropriate file:
+./deploy.sh -p dev-params.yaml    # Deploy development environment
+./deploy.sh -p prod-params.yaml   # Deploy production environment
+```
+
 ### 2. Deploy the Stack
 
 Run the deployment script:
@@ -50,7 +65,22 @@ chmod +x deploy.sh
 ./deploy.sh
 ```
 
+**Using a custom parameters file:**
+
+```bash
+# Use a different parameters file
+./deploy.sh -p my-custom-params.yaml
+
+# Or using the long form
+./deploy.sh --param-file production-params.yaml
+```
+
+**Command line options:**
+- `-p, --param-file FILE`: Specify CloudFormation parameters file (default: `cfn-stack-parameters.yaml`)
+- `-h, --help`: Show help message
+
 The script will:
+- ✓ Automatically detect your current public IP for SSH security
 - ✓ Validate required files
 - ✓ Read parameters from `cfn-stack-parameters.yaml`
 - ✓ Deploy the CloudFormation stack
@@ -94,6 +124,33 @@ aws cloudformation describe-stacks \
 ## Remote SSH Development
 
 You can connect to the EC2 instance using VS Code or Kiro's Remote-SSH extension for a native development experience.
+
+### Quick Setup (Recommended)
+
+The deployment automatically generates SSH configuration that you can append to your `~/.ssh/config` file:
+
+```bash
+# Download SSH key and append SSH config in one command
+eval "$(aws cloudformation describe-stacks \
+  --stack-name nf-core-vscode-server \
+  --query 'Stacks[0].Outputs[?OutputKey==`SSHKeyDownloadCommand`].OutputValue' \
+  --output text)"
+
+# Append SSH configuration to your config file
+aws cloudformation describe-stacks \
+  --stack-name nf-core-vscode-server \
+  --query 'Stacks[0].Outputs[?OutputKey==`SSHConfig`].OutputValue' \
+  --output text >> ~/.ssh/config
+```
+
+That's it! You can now connect using:
+```bash
+ssh VSCodeServer
+```
+
+### Manual Setup (Alternative)
+
+If you prefer to set up SSH manually:
 
 ### 1. Download SSH Key
 
@@ -149,32 +206,31 @@ Replace `<INSTANCE_PUBLIC_DNS>` with the actual DNS name from step 2.
 
 ### 4. Connect with VS Code or Kiro
 
-**Using VS Code:**
-1. Install the "Remote - SSH" extension
-2. Press `Cmd+Shift+P` (Mac) or `Ctrl+Shift+P` (Windows/Linux)
-3. Type "Remote-SSH: Connect to Host"
-4. Select "nf-core-dev" (if using SSH config) or enter `ec2-user@<INSTANCE_PUBLIC_DNS>`
-5. Select "Linux" as the platform
-6. VS Code will connect and you can open `/workdir` as your workspace
-
-**Using Kiro:**
+**Using VS Code or Kiro:**
 1. Ensure the "Remote - SSH" extension is installed
 2. Press `Cmd+Shift+P` (Mac) or `Ctrl+Shift+P` (Windows/Linux)
 3. Type "Remote-SSH: Connect to Host"
-4. Select "nf-core-dev" or enter the connection details
-5. Kiro will establish a remote session with full AI assistance on the remote instance
+4. Select "VSCodeServer" (if using quick setup) or "nf-core-dev" (if using manual setup)
+5. VS Code or Kiro will connect and you can open your workspace to develop. 
+
+> [!IMPORTANT]
+> When you connect remotely, VSCode starts a new VSCode server process! You will need to install your extensions (like the `nf-core-extensionpack`) on the remote VSCode server. 
+> 
+> Once you connect to the remote server in VSCode or Kiro, click the Extensions icon in the Activity Bar on the side of VS Code, or use the shortcut `Ctrl+Shift+X`. The browse for extensions you want to install on the remote server. 
 
 ### 5. Terminal SSH (Alternative)
 
 For command-line access:
 
+**Quick setup:**
 ```bash
-ssh -i ~/.ssh/nf-core-vscode-server.pem ec2-user@<INSTANCE_PUBLIC_DNS>
+ssh VSCodeServer
 ```
 
-Or if using SSH config:
-
+**Manual setup:**
 ```bash
+ssh -i ~/.ssh/nf-core-vscode-server.pem ec2-user@<INSTANCE_PUBLIC_DNS>
+# or if using SSH config:
 ssh nf-core-dev
 ```
 
@@ -208,14 +264,13 @@ ssh nf-core-dev
 
 ## Pre-installed Software
 
-- **Nextflow**: Latest version via Conda
-- **nf-core tools**: Latest version via Conda
+- **Nextflow**: Latest version (direct binary installation)
 - **Docker**: With Amazon ECR credential helper
-- **Miniconda**: Python environment manager
+- **Miniconda**: Python environment manager (configured for bioconda/conda-forge)
 - **AWS CLI**: Latest version
 - **GitHub CLI**: Latest version
 - **Git**: Latest version
-- **OpenJDK**: Version 21+
+- **OpenJDK**: Version 21 (Amazon Corretto)
 - **Development Tools**: GCC, make, and build essentials
 - **VS Code Extensions**:
   - AWS Toolkit
@@ -223,6 +278,22 @@ ssh nf-core-dev
   - Auto Run Command
   - Nextflow
   - nf-core Extension Pack
+
+## Post-Deployment Setup
+
+### Install nf-core Tools (Optional)
+
+The nf-core tools are not installed during deployment to reduce setup time. To install them after connecting to your instance:
+
+```bash
+# SSH into your instance or open a terminal in VS Code/Kiro
+conda install -y nf-core
+
+# Verify installation
+nf-core --version
+```
+
+This typically takes 5-10 minutes. The conda environment is already configured with bioconda and conda-forge channels.
 
 ## Instance Types
 
@@ -272,15 +343,43 @@ To remove all resources, run the cleanup script:
 ./cleanup.sh
 ```
 
+**Using a custom parameters file:**
+
+```bash
+# Use a different parameters file
+./cleanup.sh -p my-custom-params.yaml
+
+# Or using the long form
+./cleanup.sh --param-file production-params.yaml
+```
+
+**Command line options:**
+- `-p, --param-file FILE`: Specify CloudFormation parameters file (default: `cfn-stack-parameters.yaml`)
+- `-h, --help`: Show help message
+
 The script will:
-- Read stack configuration from `cfn-stack-parameters.yaml`
+- Read stack configuration from the specified parameters file
 - Display all resources that will be deleted
 - Prompt for confirmation (requires typing stack name)
 - Delete the CloudFormation stack
 - Monitor deletion progress with real-time updates
 - Clean up local files (stack-outputs.txt, SSH keys)
 
+**Environment-specific cleanup:**
+
+```bash
+# Clean up development environment
+./cleanup.sh -p dev-params.yaml
+
+# Clean up production environment  
+./cleanup.sh -p prod-params.yaml
+```
+
+If the parameters file is not found, the script will show help information and exit. 
+
 **Manual deletion** (alternative):
+
+You can use the AWS CLI to delete the CloudFormation stack manually. Assuming that you named the stack `nf-core-vscode-server`: 
 
 ```bash
 aws cloudformation delete-stack --stack-name nf-core-vscode-server
@@ -300,6 +399,10 @@ aws cloudformation wait stack-delete-complete --stack-name nf-core-vscode-server
 - Secrets Manager secrets
 - SSH key pairs
 - CloudWatch logs
+
+**Important**: 
+
+This script will **NOT** delete the uploaded CloudFormation template in your S3 bucket**. You will need to do that manually. 
 
 ## Troubleshooting
 

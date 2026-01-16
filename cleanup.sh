@@ -9,8 +9,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration
-PARAMS_FILE="cfn-stack-parameters.yaml"
+# Default configuration
+DEFAULT_PARAMS_FILE="cfn-stack-parameters.yaml"
 
 # Function to print colored messages
 print_info() {
@@ -28,6 +28,41 @@ print_warning() {
 print_error() {
     echo -e "${RED}✗${NC} $1"
 }
+
+# Parse command line arguments
+PARAMS_FILE="$DEFAULT_PARAMS_FILE"
+
+show_usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  -p, --param-file FILE    CloudFormation parameters file (default: cfn-stack-parameters.yaml)"
+    echo "  -h, --help              Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0                                    # Use default parameters file"
+    echo "  $0 -p dev-params.yaml                # Use custom parameters file"
+    echo "  $0 --param-file prod-params.yaml     # Use custom parameters file (long form)"
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -p|--param-file)
+            PARAMS_FILE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
 
 # Function to parse YAML parameters
 parse_yaml() {
@@ -78,15 +113,8 @@ read_parameters() {
     else
         print_warning "Parameters file not found: $PARAMS_FILE"
         print_info "Please provide stack name and region manually"
-        
-        read -p "Enter stack name: " STACK_NAME
-        read -p "Enter region [us-east-1]: " REGION
-        REGION=${REGION:-us-east-1}
-        
-        if [ -z "$STACK_NAME" ]; then
-            print_error "Stack name is required"
-            exit 1
-        fi
+        show_usage
+        exit 1
     fi
 }
 
@@ -138,13 +166,6 @@ confirm_deletion() {
         exit 0
     fi
     
-    echo ""
-    read -p "Type the stack name to confirm: " confirm_name
-    
-    if [ "$confirm_name" != "$STACK_NAME" ]; then
-        print_error "Stack name does not match. Deletion cancelled."
-        exit 1
-    fi
 }
 
 # Function to delete stack
@@ -260,6 +281,9 @@ main() {
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}        nf-core VS Code Server - Stack Cleanup                     ${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    print_info "Using parameters file: $PARAMS_FILE"
     echo ""
     
     # Check prerequisites
